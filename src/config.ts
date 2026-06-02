@@ -15,4 +15,6 @@ export const config = {
   userAgent:
     process.env.USER_AGENT ??
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  youtubeDataApiKey: process.env.YOUTUBE_DATA_API_KEY?.trim() ?? '',
+  youtubeLiveMethod: (process.env.YOUTUBE_LIVE_METHOD ?? 'auto') as 'scrape' | 'data_api' | 'auto',
 };

@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { config } from './config.js';
 import { hlsRoutes } from './routes/hls.js';
+import { youtubeRoutes } from './routes/youtube.js';
 
 const app = new Hono();
 
@@ -20,6 +21,7 @@ app.get('/health', (c) => {
 });
 
 app.route('/api/hls', hlsRoutes);
+app.route('/api/youtube', youtubeRoutes);
 
 serve(
   {
