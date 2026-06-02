@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { config } from './config.js';
+import { hlsRoutes } from './routes/hls.js';
 
 const app = new Hono();
 
@@ -17,6 +18,8 @@ app.use(
 app.get('/health', (c) => {
   return c.json({ ok: true, service: 'live-stream-aggregator-backend' });
 });
+
+app.route('/api/hls', hlsRoutes);
 
 serve(
   {
