@@ -1,100 +1,260 @@
 # Live Stream Aggregator Backend
 
-Thin TypeScript API for the [Live Stream Aggregator web app](../sports-streaming). Provides **HLS proxying**, **server-side health probes**, and **YouTube live detection**. It does not transcode, restream YouTube as HLS, or discover stream URLs.
+Thin TypeScript API ([Hono](https://hono.dev/)) for the [Live Stream Aggregator web app](https://github.com/tejasvi-mehra/live-stream-aggregator). Provides **HLS proxying**, **server-side health probes**, and **YouTube live detection**.
 
-## What this backend does
+This is a **personal-use** companion service — not a media ingest pipeline, transcoder, or CDN. It exists so a small browser app can play third-party HLS reliably without CORS issues and with pre-flight reachability checks.
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /health` | Service liveness |
-| `GET /api/hls/health?url=` | Server-side HLS manifest + first-segment probe |
-| `POST /api/hls/health/batch` | Parallel probes for catalog startup |
-| `GET /api/hls/proxy?url=` | Proxy manifests/segments; rewrite m3u8 URIs through this server |
-| `GET /api/youtube/live` | YouTube channel live check — **HTML scrape by default**; optional **YouTube Data API** when `YOUTUBE_DATA_API_KEY` is set |
+**Live API:** https://live-stream-aggregator-backend-production.up.railway.app/
 
-## What it does NOT do
+**Web app:** https://live-stream-aggregator.vercel.app/
 
-- No ffmpeg ingest or transcoding
-- No YouTube → HLS restream (YouTube playback stays iframe in the web app)
-- No automatic URL discovery or Buffstreams scraping
-- No guarantee that upstream feeds are live or high quality
+**Web app repo:** https://github.com/tejasvi-mehra/live-stream-aggregator
 
-## Role in the stack
+---
 
-| Concern | How this backend helps |
-|---------|------------------------|
-| **Playback reliability** | Same-origin HLS delivery avoids browser CORS failures; server probes catch dead manifests before playback; proxy rewrites keep hls.js segment loads reliable |
-| **Architecture** | Clear browser → API → origin path; deployable service; YouTube live checks run server-side |
-| **Operations** | Static web build + deployed API supports production hosting without local dev servers only |
-| **Scope** | Thin proxy instead of a full media pipeline |
+## API surface
 
-## Limits
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Service liveness |
+| `/api/hls/health` | GET | Probe one HLS manifest (+ optional first segment) |
+| `/api/hls/health/batch` | POST | Parallel probes for catalog startup `{ urls: string[] }` |
+| `/api/hls/proxy` | GET | Proxy manifest or segment; rewrite m3u8 URIs |
+| `/api/youtube/live` | GET | YouTube channel live check (`channelUrl`, optional `channelId`) |
 
-- **Upstream quality is unchanged** — if the origin is offline, low bitrate, or not a real game feed, the proxy cannot fix it
-- **Demo IPTV URLs** — production YAML may include public IPTV-style HLS endpoints to exercise the product; these are not private streams and are not guaranteed live
-- **YouTube scrape is fragile** — markup changes can cause false negatives
-- **Open proxy risk** — use `PROXY_ALLOWLIST` in production; localhost/private IPs are blocked by default
-- **Manual YAML curation** — you still paste m3u8 URLs when you get them
+### What it does NOT do
 
-## Architecture
+- No ffmpeg ingest, transcoding, or packaging
+- No YouTube → HLS restream (YouTube stays iframe in the web app)
+- No automatic stream URL discovery
+- No guarantee upstream feeds are live, licensed, or high quality
+
+---
+
+## System design
+
+### Role in the stack
 
 ```mermaid
-flowchart LR
-  Browser[React web app] -->|health + YouTube live| API[Backend :3002]
-  HlsJs[hls.js] -->|manifest + segments| Proxy[/api/hls/proxy/]
-  Proxy --> Origin[HLS origins]
-  API --> Origin
-  API --> YouTube[YouTube pages]
-  Browser --> YTIframe[YouTube iframe]
+flowchart TB
+  subgraph browser [Viewer browser]
+    App[React web app]
+    HlsJs[hls.js]
+    YT[YouTube iframe]
+  end
+
+  subgraph api [This API — Railway]
+    BatchHealth[health/batch]
+    Proxy[hls/proxy]
+    YTLive[youtube/live]
+  end
+
+  subgraph origins [External origins]
+    CDNs[HLS CDNs]
+    YTPages[YouTube HTML / Data API]
+  end
+
+  App -->|catalog health| BatchHealth
+  BatchHealth --> CDNs
+  HlsJs -->|all HLS bytes| Proxy
+  Proxy --> CDNs
+  App -->|live?| YTLive
+  YTLive --> YTPages
+  App --> YT
 ```
 
-**Playback paths**
+The web app is a static SPA on Vercel. **All HLS bytes** flow browser → this API → origin CDN. The API never stores segments long-term; it forwards and rewrites playlists on the fly.
 
-- **HLS:** Browser loads `GET /api/hls/proxy?url=<origin>` → backend fetches upstream, rewrites playlist lines, streams segments
-- **YouTube:** Backend only answers “is this channel live?”; the web app embeds `live_stream?channel=...`
+### Why HLS proxy instead of direct browser → CDN?
+
+Public sports CDNs often omit `Access-Control-Allow-Origin` headers. Browsers block cross-origin fetches from hls.js. Proxying through your own API:
+
+1. Makes manifest/segment requests **same-origin** from the player’s perspective (API host)
+2. Rewrites nested playlist URLs, encryption key URIs (`#EXT-X-KEY`), and init segment maps (`#EXT-X-MAP`)
+3. Centralizes **SSRF protection** (block private IPs, optional hostname allowlist)
+4. Keeps **binary segments** intact (arrayBuffer passthrough — no `.text()` on TS)
+
+### Health check flow
+
+```mermaid
+sequenceDiagram
+  participant App as Web app
+  participant API as Backend
+  participant Origin as HLS origin
+
+  App->>API: POST /api/hls/health/batch { urls }
+  par parallel probes
+    API->>Origin: GET master.m3u8
+    Origin-->>API: playlist
+    API->>Origin: GET first segment (Range 0-8191)
+    Origin-->>API: 200/206
+  end
+  API-->>App: { results: { url: { reachable, latencyMs } } }
+```
+
+Each probe validates the response looks like HLS, optionally fetches the first ~8 KB of a media segment, and records round-trip latency from the **API region** (Railway US) — not the viewer’s location.
+
+### HLS proxy / playback data path
+
+```mermaid
+sequenceDiagram
+  participant hls.js
+  participant Proxy as GET /api/hls/proxy
+  participant Upstream as Origin CDN
+
+  hls.js->>Proxy: proxy?url=master.m3u8
+  Proxy->>Upstream: GET master.m3u8
+  Upstream-->>Proxy: text playlist
+  Note over Proxy: rewritePlaylist() — every URI → proxy URL
+  Proxy-->>hls.js: application/vnd.apple.mpegurl
+
+  hls.js->>Proxy: proxy?url=720p/seg001.ts
+  Proxy->>Upstream: GET segment (binary)
+  Upstream-->>Proxy: MPEG-TS bytes
+  Proxy-->>hls.js: application/octet-stream (unchanged body)
+```
+
+**Manifests:** fetched as text, parsed line-by-line, relative URLs resolved against the upstream base, then emitted with `PUBLIC_API_BASE/api/hls/proxy?url=...`.
+
+**Segments:** fetched as `arrayBuffer()`, returned with upstream `Content-Type`, `Content-Length`, and `Content-Range` when present.
+
+### YouTube live detection
+
+Playback is always YouTube’s iframe. This API only returns metadata:
+
+```json
+{ "isLive": true, "channelId": "UC…", "title": "…" }
+```
+
+Detection modes (`YOUTUBE_LIVE_METHOD`):
+
+| Mode | Behavior |
+|------|----------|
+| Default / `scrape` | Fetch channel `/live` HTML, parse live indicators |
+| `data_api` | YouTube Data API search (requires `YOUTUBE_DATA_API_KEY`) |
+| `auto` | Data API when key set; scrape fallback on errors |
+
+---
+
+## Stream catalog (web app)
+
+Stream lists live in the web app repo as YAML:
+
+https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/config/streams.yaml
+
+The web app fetches the raw file from GitHub at startup, collects all HLS `url` and `audio[].url` values, and sends them to `POST /api/hls/health/batch`. See the [web app README — Stream catalog](https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/README.md#stream-catalog-streamsyaml) for the full schema.
+
+This API does **not** host or validate YAML — it only probes and proxies URLs the client sends.
+
+---
 
 ## Quick start
 
 ```bash
+git clone https://github.com/tejasvi-mehra/live-stream-aggregator-backend.git
 cd live-stream-aggregator-backend
 cp .env.example .env
 npm install
 npm run dev
 ```
 
-Default port: **3002**
-
-Run tests:
+Default local port: **3002**
 
 ```bash
 npm test
+npm run build && npm start
 ```
 
-Run the web app with the API base set:
+Pair with the web app:
 
 ```bash
-cd ../sports-streaming
-VITE_API_BASE=http://localhost:3002 npm run dev:production
+git clone https://github.com/tejasvi-mehra/live-stream-aggregator.git
+cd live-stream-aggregator
+cp .env.example .env
+VITE_API_BASE=http://localhost:3002 npm run dev
 ```
 
-`VITE_API_BASE` is required by the web app — it will not start without it.
+Full web app setup: https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/README.md
+
+---
 
 ## Environment
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3002` | HTTP listen port |
-| `CORS_ORIGIN` | `http://localhost:3001` | Allowed web app origin |
-| `PUBLIC_API_BASE` | `http://localhost:3002` | Base URL written into rewritten m3u8 lines |
-| `PROXY_ALLOWLIST` | _(empty = all public hosts)_ | Comma-separated allowed hostnames |
+| Variable | Default (local) | Production example |
+|----------|-----------------|-------------------|
+| `PORT` | `3002` | Railway sets automatically |
+| `CORS_ORIGIN` | `http://localhost:3001` | Comma-separated allowed web app origins (e.g. `http://localhost:3001,https://live-stream-aggregator.vercel.app`) |
+| `PUBLIC_API_BASE` | `http://localhost:3002` | `https://live-stream-aggregator-backend-production.up.railway.app` |
+| `PROXY_ALLOWLIST` | _(empty = all public hosts)_ | Comma-separated CDN hostnames |
 | `FETCH_TIMEOUT_MS` | `10000` | Upstream fetch timeout |
-| `YOUTUBE_DATA_API_KEY` | _(empty)_ | Optional Google API key for live detection |
-| `YOUTUBE_LIVE_METHOD` | `auto` | `scrape` \| `data_api` \| `auto` (API when key set, else scrape; `auto` falls back to scrape on API errors) |
+| `YOUTUBE_DATA_API_KEY` | _(empty)_ | Optional Google API key |
+| `YOUTUBE_LIVE_METHOD` | `auto` | `scrape` \| `data_api` \| `auto` |
 
-**YouTube playback is always iframe embed** — the Data API is used only for live detection, not video delivery.
+`PUBLIC_API_BASE` must match the URL clients use to reach this API — it is written into rewritten m3u8 lines.
 
-## Security notes
+---
 
-- Only `http:` / `https:` targets are accepted
-- Localhost and common private IPv4 ranges are rejected (SSRF guard)
-- Set `PROXY_ALLOWLIST` before any public deployment
+## Security
+
+- Only `http:` / `https:` targets accepted
+- Localhost and private IPv4 ranges rejected on proxy targets (SSRF guard)
+- Set `PROXY_ALLOWLIST` before public deployment to restrict upstream hostnames
+- No authentication — intended for personal use behind Vercel + Railway, not multi-tenant production
+
+---
+
+## Project layout
+
+```
+live-stream-aggregator-backend/
+├── src/
+│   ├── index.ts
+│   ├── config.ts
+│   ├── routes/
+│   │   ├── hls.ts
+│   │   └── youtube.ts
+│   └── lib/
+│       ├── hlsProxy.ts         # fetch + rewrite or passthrough
+│       ├── hlsHealth.ts        # manifest + segment probe
+│       ├── playlistRewrite.ts  # m3u8 URI rewriting
+│       ├── playlistParser.ts
+│       ├── youtubeLive.ts
+│       └── urlUtils.ts         # SSRF + fetch timeout
+└── ...
+```
+
+---
+
+## Limits (personal-scale scope)
+
+- **Upstream quality unchanged** — offline or low-bitrate origins stay offline/low-bitrate
+- **Geo restrictions** — probes and proxy run from Railway region; some origins block US IPs
+- **YouTube scrape fragility** — HTML changes can cause false negatives
+- **No horizontal scaling design** — single Node process; fine for one user, not a broadcast aggregator
+- **Manual URL curation** — m3u8 URLs are pasted into YAML by hand
+
+---
+
+## Trade-offs
+
+| Decision | Rationale |
+|----------|-----------|
+| **Thin proxy vs media server** | Minimal ops for personal viewing; no ffmpeg/OvenMediaEngine to run |
+| **Playlist rewrite in Node** | Keeps hls.js simple; all relative URLs stay on proxy path |
+| **Batch health at catalog load** | One round trip before UI renders; avoids N sequential browser probes |
+| **Binary segment passthrough** | Correct TS delivery; text decoding would corrupt segments |
+
+---
+
+## Possible improvements
+
+- Stream proxy response bodies with `ReadableStream` (lower memory on large segments)
+- Cache health results with short TTL
+- Serve catalog YAML from this API (`GET /api/catalog`) with embedded health
+- Geo-aware probe regions
+
+---
+
+## Costs
+
+**$0** on default Railway/Vercel free tiers at personal traffic. Optional YouTube Data API within free quota.

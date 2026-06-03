@@ -6,9 +6,22 @@ const parseList = (value: string | undefined): string[] => {
     .filter(Boolean);
 };
 
+const parseOrigins = (value: string | undefined, fallback: string): string[] => {
+  if (!value?.trim()) {
+    return [fallback];
+  }
+
+  const origins = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return origins.length > 0 ? origins : [fallback];
+};
+
 export const config = {
   port: Number(process.env.PORT ?? 3002),
-  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3001',
+  corsOrigins: parseOrigins(process.env.CORS_ORIGIN, 'http://localhost:3001'),
   publicApiBase: (process.env.PUBLIC_API_BASE ?? 'http://localhost:3002').replace(/\/$/, ''),
   proxyAllowlist: parseList(process.env.PROXY_ALLOWLIST),
   fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS ?? 10000),

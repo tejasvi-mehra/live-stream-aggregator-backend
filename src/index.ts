@@ -10,7 +10,7 @@ const app = new Hono();
 app.use(
   '*',
   cors({
-    origin: config.corsOrigin,
+    origin: config.corsOrigins,
     allowMethods: ['GET', 'POST', 'OPTIONS'],
     allowHeaders: ['Content-Type'],
   })
