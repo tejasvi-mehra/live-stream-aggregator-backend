@@ -183,7 +183,7 @@ Full web app setup: https://github.com/tejasvi-mehra/live-stream-aggregator/blob
 | Variable | Default (local) | Production example |
 |----------|-----------------|-------------------|
 | `PORT` | `3002` | Railway sets automatically |
-| `CORS_ORIGIN` | `http://localhost:3001` | Comma-separated allowed web app origins (e.g. `http://localhost:3001,https://live-stream-aggregator.vercel.app`) |
+| `CORS_ORIGIN` | Built-in regex defaults (see below) | Comma-separated regex patterns matching allowed `Origin` headers |
 | `PUBLIC_API_BASE` | `http://localhost:3002` | `https://live-stream-aggregator-backend-production.up.railway.app` |
 | `PROXY_ALLOWLIST` | _(empty = all public hosts)_ | Comma-separated CDN hostnames |
 | `FETCH_TIMEOUT_MS` | `10000` | Upstream fetch timeout |
@@ -191,6 +191,16 @@ Full web app setup: https://github.com/tejasvi-mehra/live-stream-aggregator/blob
 | `YOUTUBE_LIVE_METHOD` | `auto` | `scrape` \| `data_api` \| `auto` |
 
 `PUBLIC_API_BASE` must match the URL clients use to reach this API — it is written into rewritten m3u8 lines.
+
+When `CORS_ORIGIN` is unset, these regex patterns are used:
+
+```
+^http://localhost(:\d+)?$
+^https://live-stream-aggregator\.vercel\.app$
+^https://live-stream-aggregator-[a-z0-9-]+-tejasvimehras-projects\.vercel\.app$
+```
+
+They cover local dev (any port), production, and Vercel preview deployments. Override with a comma-separated list of your own patterns if needed.
 
 ---
 
