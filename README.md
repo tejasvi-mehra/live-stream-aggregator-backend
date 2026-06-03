@@ -142,7 +142,7 @@ Stream lists live in the web app repo as YAML:
 
 https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/config/streams.yaml
 
-The web app fetches the raw file from GitHub at startup, collects all HLS `url` and `audio[].url` values, and sends them to `POST /api/hls/health/batch`. See the [web app README — Stream catalog](https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/README.md#stream-catalog-streamsyaml) for the full schema.
+The web app fetches the raw file from GitHub at startup, collects HLS `url` and `audio[].url` values **when the user opens an event**, and sends them to `POST /api/hls/health/batch`. See the [web app README — Stream catalog](https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/README.md#stream-catalog-streamsyaml) for the full schema.
 
 This API does **not** host or validate YAML — it only probes and proxies URLs the client sends.
 
@@ -251,7 +251,7 @@ live-stream-aggregator-backend/
 |----------|-----------|
 | **Thin proxy vs media server** | Minimal ops for personal viewing; no ffmpeg/OvenMediaEngine to run |
 | **Playlist rewrite in Node** | Keeps hls.js simple; all relative URLs stay on proxy path |
-| **Batch health at catalog load** | One round trip before UI renders; avoids N sequential browser probes |
+| **Batch health on play** | One round trip per opened event; keeps catalog load fast |
 | **Binary segment passthrough** | Correct TS delivery; text decoding would corrupt segments |
 
 ---
