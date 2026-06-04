@@ -142,7 +142,7 @@ Stream lists live in the web app repo as YAML:
 
 https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/config/streams.yaml
 
-The web app fetches the raw file from GitHub at startup, collects HLS `url` and `audio[].url` values **when the user opens an event**, and sends them to `POST /api/hls/health/batch`. See the [web app README — Stream catalog](https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/README.md#stream-catalog-streamsyaml) for the full schema.
+The web app fetches the raw file from GitHub at startup, then probes HLS `url` and `audio[].url` values in a **background batch** (once per full page load) and again **when the user opens an event**. Both flows call `POST /api/hls/health/batch`. See the [web app README — Stream catalog](https://github.com/tejasvi-mehra/live-stream-aggregator/blob/main/README.md#stream-catalog-streamsyaml) for the full schema.
 
 This API does **not** host or validate YAML — it only probes and proxies URLs the client sends.
 
@@ -185,7 +185,7 @@ Full web app setup: https://github.com/tejasvi-mehra/live-stream-aggregator/blob
 | `PORT` | `3002` | Railway sets automatically |
 | `CORS_ORIGIN` | Built-in regex defaults (see below) | Comma-separated regex patterns matching allowed `Origin` headers |
 | `PUBLIC_API_BASE` | `http://localhost:3002` | `https://live-stream-aggregator-backend-production.up.railway.app` |
-| `PROXY_ALLOWLIST` | _(empty = all public hosts)_ | Comma-separated CDN hostnames |
+| `PROXY_ALLOWLIST` | _(empty = all public hosts)_ | Comma-separated CDN hostnames (include segment CDNs from rewritten playlists, e.g. `cs.liiift.io` for Red Bull) |
 | `FETCH_TIMEOUT_MS` | `10000` | Upstream fetch timeout |
 | `YOUTUBE_DATA_API_KEY` | _(empty)_ | Optional Google API key |
 | `YOUTUBE_LIVE_METHOD` | `auto` | `scrape` \| `data_api` \| `auto` |
@@ -210,6 +210,14 @@ They cover local dev (any port), production, and Vercel preview deployments. Ove
 - Localhost and private IPv4 ranges rejected on proxy targets (SSRF guard)
 - Set `PROXY_ALLOWLIST` before public deployment to restrict upstream hostnames
 - No authentication — intended for personal use behind Vercel + Railway, not multi-tenant production
+
+**Production example** (from `.env.example` — update when the catalog adds new origins):
+
+```
+PROXY_ALLOWLIST=cs.liiift.io,devstreaming-cdn.apple.com,edge13.vedge.infomaniak.com,kanal75xto-llhls.akamaized.net,na.linear.zype.com,play.redbull.com,rthktv35-vos-live.akamaized.net,streams2.sofast.tv,streamtv.as3sport.online
+```
+
+Manifest URLs may point at `play.redbull.com` while segments are served from `cs.liiift.io` after playlist rewrite — both hostnames must be allowed.
 
 ---
 
@@ -251,7 +259,7 @@ live-stream-aggregator-backend/
 |----------|-----------|
 | **Thin proxy vs media server** | Minimal ops for personal viewing; no ffmpeg/OvenMediaEngine to run |
 | **Playlist rewrite in Node** | Keeps hls.js simple; all relative URLs stay on proxy path |
-| **Batch health on play** | One round trip per opened event; keeps catalog load fast |
+| **Batch health** | Background catalog probe on page load + per-event probe on play; keeps UI responsive |
 | **Binary segment passthrough** | Correct TS delivery; text decoding would corrupt segments |
 
 ---
